@@ -70,18 +70,24 @@ jobs:
         shell: bash
     env:
       IMAGE_ARCH: ${{ matrix.arch }}
-      IMAGE_TAG: backup-tool:mysql8.0
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - name: Resolve image version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version=$GITHUB_REF_NAME
+          else
+            version=$(git describe --tags --always --dirty)
+          fi
+          printf 'IMAGE_VERSION=%s\nIMAGE_TAG=backup-tool:%s-mysql8.0\n' "$version" "$version" >> "$GITHUB_ENV"
       - name: Build and export image
         run: |
-          version=$(git describe --tags --always --dirty)
           go_version=$(awk '$1 == "go" { print $2 }' go.mod)
           docker build --pull --platform "linux/$IMAGE_ARCH" \
             --build-arg "GO_IMAGE=golang:$go_version" \
-            --build-arg "VERSION=$version" \
+            --build-arg "VERSION=$IMAGE_VERSION" \
             -t "$IMAGE_TAG" .
           test "$(docker image inspect "$IMAGE_TAG" --format '{{.Architecture}}')" = "$IMAGE_ARCH"
           mkdir -p image-dist
@@ -96,8 +102,7 @@ jobs:
           trap 'docker rm -f image-check >/dev/null 2>&1 || true' EXIT
           docker run -d --name image-check \
             -v "$PWD/image-check-data:/build-tool" "$IMAGE_TAG"
-          version=$(git describe --tags --always --dirty)
-          test "$(docker exec image-check backup-tool --version)" = "backup-tool $version"
+          test "$(docker exec image-check backup-tool --version)" = "backup-tool $IMAGE_VERSION"
           docker exec image-check mysqldump --version
           docker exec image-check mysql --version
           docker exec image-check backup-tool --config /build-tool/backup-tool.toml --check

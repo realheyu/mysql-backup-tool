@@ -18,15 +18,16 @@ awk -v file="backup-tool-image-linux-$arch.tar.gz" '$2 == file' "$download_dir/S
 test -s "$download_dir/image.sha256" && sha256sum -c "$download_dir/image.sha256" && docker load -i "$download_dir/backup-tool-image-linux-$arch.tar.gz"
 ```
 
-归档由 `docker save` 导出并使用 gzip 压缩，`docker load` 可直接读取，无需手工解压。导入后的镜像名为 `backup-tool:mysql8.0`，程序内含对应发布版本。更新时导入新版归档，再按下文重建常驻容器；旧容器不会因为导入新镜像自动更新。
+归档由 `docker save` 导出并使用 gzip 压缩，`docker load` 可直接读取，无需手工解压。新工作流使用「Git 标签 + MySQL 客户端系列」作为镜像版本：例如发布 `v0.1.3` 时，导入后的镜像名为 `backup-tool:v0.1.3-mysql8.0`，程序的 `--version` 输出 `backup-tool v0.1.3`。不同版本的镜像可以同时保留。更新时导入新版归档，再使用新版本的镜像名重建常驻容器；旧容器不会因为导入新镜像自动更新。旧版 `v0.1.1`、`v0.1.2` 归档仍使用 `backup-tool:mysql8.0`，不受此变更影响。
 
 也可以在源码根目录自行构建 Linux amd64 镜像；ARM64 服务器将平台改为 `linux/arm64`。使用支持 BuildKit 的 Docker，跨架构运行构建步骤还需构建器支持相应架构：
 
 ```bash
+version=$(git describe --tags --always --dirty)
 docker build --platform linux/amd64 \
-  --build-arg VERSION=dev \
-  -t backup-tool:mysql8.0 .
-docker image inspect backup-tool:mysql8.0 --format '{{.Size}}'
+  --build-arg "VERSION=$version" \
+  -t "backup-tool:$version-mysql8.0" .
+docker image inspect "backup-tool:$version-mysql8.0" --format '{{.Size}}'
 ```
 
 `VERSION` 可改为实际发布版本。MySQL 客户端补丁版本由构建时的 Ubuntu 软件源决定，重建时可加 `--pull --no-cache` 获取更新，更新后验证实际备份和恢复。镜像大小以 `inspect` 输出为准（字节）。[.dockerignore](.dockerignore) 只允许源码、模块文件和许可进入构建上下文，配置、凭据和备份不打入镜像。
@@ -54,12 +55,14 @@ fi
 
 容器中的 `127.0.0.1` 指向备份容器自身；若连接同一 Docker 网络中的 MySQL，添加 `--network 实际网络名`，并将 `host` 设置为数据库服务名、`port` 设置为容器内端口。
 
+以下以镜像版本 `v0.1.3` 为例，启动时替换成 `docker load` 实际导入的版本：
+
 ```bash
 docker run -d \
   --name mysql-backup \
   --restart unless-stopped \
   -v /opt/mysql-backup-tool/build-tool:/build-tool \
-  backup-tool:mysql8.0
+  backup-tool:v0.1.3-mysql8.0
 ```
 
 容器名为 `mysql-backup`，容器内程序名为 `backup-tool`。上述命令只需创建容器时执行一次；`--restart unless-stopped` 让容器随 Docker 服务恢复运行，手工停止的容器保持停止。以后检查和备份均复用该容器：
@@ -423,6 +426,8 @@ Makefile 固定使用 `CGO_ENABLED=0` 静态编译，使用 `-trimpath` 并去�
 [GitHub Actions](.github/workflows/ci.yml) 在推送 `main`、提交 PR 或手工运行时，执行 Linux/macOS 的 `make check`，构建 Linux amd64/arm64 产物并保存到 Actions 的 `backup-tool-linux` artifact。同时在 amd64、arm64 原生 runner 上分别构建 Docker 镜像，导出为 gzip 压缩的 Docker 归档，保存到 `backup-tool-image-linux-amd64` 和 `backup-tool-image-linux-arm64` artifact。所有 Actions 构建使用 `go.mod` 中的 Go 版本。
 
 镜像任务检查架构、压缩包完整性和 `docker load` 导入，启动常驻容器后验证程序版本、MySQL 客户端和配置读取。该检查不连接真实数据库；部署后仍需实际备份和隔离恢复验收。不推送 GHCR 或 Docker Hub，无需镜像仓库账号。
+
+标签构建使用触发工作流的 Git 标签加上 `-mysql8.0` 作为镜像版本，例如 `backup-tool:v0.1.3-mysql8.0`；分支、PR 和手工分支构建使用 `git describe` 的结果。程序版本仅使用 Git 版本号，镜像标签额外带有 `-mysql8.0` 后缀，导出的归档保留完整镜像标签。
 
 推送 `v*` tag 后，两种系统的测试、二进制构建和两种架构的镜像验证全部通过才发布 GitHub Release，附带：
 
