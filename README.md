@@ -1,16 +1,98 @@
 # backup-tool
 
-MySQL 备份小工具，统一使用本机 `mysqldump`，通过数据库地址、端口和账号连接本机或远程 MySQL。Docker 中的 MySQL 通过可访问的映射端口连接。备份保存到运行本工具的机器，可选同步到 OSS，按天清理本机旧备份。错误发钉钉，普通成功不发，每周发送一次汇总。
+MySQL 备份小工具，统一使用运行环境中的 `mysqldump`，通过数据库地址、端口和账号连接本机或远程 MySQL。备份 Docker 中的 MySQL 时，可从宿主机连接映射端口，也可在容器内运行程序、由宿主机定时调用。备份保存到配置的 `backup_dir`，可选同步到 OSS，按天清理本机旧备份。错误发钉钉，普通成功不发，每周发送一次汇总。
+
+## 独立 Docker 镜像（推荐）
+
+[Dockerfile](Dockerfile) 使用多阶段构建：Go 编译环境只用于构建，最终镜像为 Ubuntu 24.04，包含本工具、MySQL 8.0 客户端核心包和 CA 证书。无需在宿主机安装 Go 或 MySQL 客户端。容器通过 `sleep infinity` 常驻，宿主机使用 `docker exec` 执行备份，可由 cron 定时调度；启动容器本身不会自动执行备份。
+
+镜像构建使用 Ubuntu 默认 APT 源和 Go 默认模块代理，保留模块校验，不配置国内镜像源。基础镜像从 Docker Hub 拉取；构建参数 `GO_IMAGE`、`UBUNTU_IMAGE` 可指定对应的 Go 1.27.3 和 Ubuntu 24.04 镜像。
+
+推荐从 [Releases](https://github.com/realheyu/mysql-backup-tool/releases) 下载由 Actions 构建的镜像归档，不需要登录镜像仓库或在服务器上编译。Linux x86_64 选择 `backup-tool-image-linux-amd64.tar.gz`，aarch64 选择 `backup-tool-image-linux-arm64.tar.gz`，同时下载同一版本的 `SHA256SUMS`。在下载目录执行（ARM64 修改 `arch`）：
+
+```bash
+arch=amd64
+awk -v file="backup-tool-image-linux-$arch.tar.gz" '$2 == file' SHA256SUMS > image.sha256
+test -s image.sha256 && sha256sum -c image.sha256 && docker load -i "./backup-tool-image-linux-$arch.tar.gz"
+```
+
+归档由 `docker save` 导出并使用 gzip 压缩，`docker load` 可直接读取，无需手工解压。导入后的镜像名为 `backup-tool:mysql8.0`，程序内含对应发布版本。更新时导入新版归档，再按下文重建常驻容器；旧容器不会因为导入新镜像自动更新。
+
+也可以在源码根目录自行构建 Linux amd64 镜像；ARM64 服务器将平台改为 `linux/arm64`。使用支持 BuildKit 的 Docker，跨架构运行构建步骤还需构建器支持相应架构：
+
+```bash
+docker build --platform linux/amd64 \
+  --build-arg VERSION=dev \
+  -t backup-tool:mysql8.0 .
+docker image inspect backup-tool:mysql8.0 --format '{{.Size}}'
+```
+
+`VERSION` 可改为实际发布版本。MySQL 客户端补丁版本由构建时的 Ubuntu 软件源决定，重建时可加 `--pull --no-cache` 获取更新，更新后验证实际备份和恢复。镜像大小以 `inspect` 输出为准（字节）。[.dockerignore](.dockerignore) 只允许源码、模块文件和许可进入构建上下文，配置、凭据和备份不打入镜像。
+
+运行时只挂载当前目录下的 `./build-tool`，配置、可选客户端配置和备份都放在这个目录中。程序和 MySQL 客户端已在镜像内，不需要放入挂载目录：
+
+```text
+build-tool/
+├── backup-tool.toml     # 运行配置
+├── mysql-client.cnf     # 可选：使用 defaults_file 时提供
+├── backup.env           # 可选：使用 --env-file 时提供
+└── backups/             # 备份、锁和周统计，按任务名分目录
+```
+
+在部署目录准备运行目录，已有配置会保留。配置模板可从同一 Release 的 `backup-tool-linux-amd64.tar.gz` 或 `backup-tool-linux-arm64.tar.gz` 运行包取出；源码部署直接使用源码根目录的模板。创建容器时从 `build-tool` 的父目录执行启动命令：
+
+```bash
+install -d -m 700 ./build-tool ./build-tool/backups
+if [ ! -e ./build-tool/backup-tool.toml ]; then
+  install -m 600 ./backup-tool.example.toml ./build-tool/backup-tool.toml
+fi
+```
+
+编辑 `./build-tool/backup-tool.toml`，保留顶层 `backup_dir = "./backups"`，在 `[mysql]` 中填入可从容器访问的数据库地址、端口、账号和业务库。可以在 TOML 中填写 `password`；使用环境变量时，在 Docker 命令中添加 `--env-file ./build-tool/backup.env`。使用客户端配置时设置 `defaults_file = "./mysql-client.cnf"`，不需要额外挂载。配置中的相对路径以 TOML 所在目录为准。
+
+容器中的 `127.0.0.1` 指向备份容器自身；若连接同一 Docker 网络中的 MySQL，添加 `--network 实际网络名`，并将 `host` 设置为数据库服务名、`port` 设置为容器内端口。
+
+```bash
+docker run -d \
+  --name mysql-backup \
+  --restart unless-stopped \
+  -v ./build-tool:/build-tool \
+  backup-tool:mysql8.0
+```
+
+容器名为 `mysql-backup`，容器内程序名为 `backup-tool`。上述命令只需创建容器时执行一次；`--restart unless-stopped` 让容器随 Docker 服务恢复运行，手工停止的容器保持停止。以后检查和备份均复用该容器：
+
+```bash
+docker exec mysql-backup backup-tool --version
+docker exec mysql-backup mysqldump --version
+docker exec mysql-backup backup-tool --config ./backup-tool.toml --check
+docker exec mysql-backup backup-tool --config ./backup-tool.toml
+```
+
+`--check` 仅检查配置，不连接数据库。宿主机来源使用相对路径 `./build-tool`，容器挂载目标 `/build-tool` 按 Docker 要求使用绝对路径；它也是 `docker exec` 的默认工作目录，程序读取 `./backup-tool.toml`。备份、锁和周统计均写入宿主机的 `./build-tool/backups`。备份进程完成后退出，容器继续运行。整个运行目录已加入 `.gitignore` 和 Docker 构建排除规则。
+
+镜像默认以 root 运行；如自行指定 `--user`，需保证该用户能读取配置、写入备份目录。实际备份和隔离恢复验证通过后，可在宿主机 `crontab -e` 中配置每天 03:00 执行（按宿主机时区，替换已有任务以避免重复）：
+
+```cron
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+0 3 * * * docker exec mysql-backup backup-tool --config ./backup-tool.toml
+```
+
+相对路径在容器工作目录下解析，cron 不需要先切换宿主机目录。定时执行不加 `-d` 或 `-it`，等待备份完成并返回退出码；输出交给 cron 处理。容器未运行或 Docker 调用失败时，程序尚未启动，不能发出钉钉告警。
+
+修改挂载目录中的 TOML 或客户端配置，下一次备份直接读取新配置；修改通过 `--env-file` 注入的环境变量、挂载参数或更新镜像时需要重建容器。先确认当前备份已结束，再执行 `docker stop mysql-backup`、`docker rm mysql-backup`，然后从运行目录的父目录重新执行上述启动命令；宿主机 `./build-tool` 内的文件保留。
 
 ## Linux 安装和运行
 
 以下以 Linux 服务器、Bash、安装到 `/opt/backup-tool` 为例。所有命令均在 root 用户的终端中执行，安装、更新、手工运行和 cron 都使用 root。
 
-GitHub [Releases](https://github.com/realheyu/backup-tool/releases/latest) 提供 Linux amd64/arm64 的静态二进制、运行包和 `SHA256SUMS`。推荐下载 `.tar.gz` 运行包，包含：
+GitHub [Releases](https://github.com/realheyu/mysql-backup-tool/releases/latest) 提供 Linux amd64/arm64 的静态二进制、运行包和 `SHA256SUMS`。推荐下载 `.tar.gz` 运行包，包含：
 
 ```text
 backup-tool                  程序
 backup-tool.example.toml     配置模板
+deploy/cron.example          定时任务模板
+deploy/cron.docker.example   宿主机调度容器内程序的定时任务模板
 README.md                    说明
 LICENSE                      项目许可
 THIRD_PARTY_NOTICES.txt       第三方许可
@@ -71,7 +153,7 @@ mysqldump --version
 ```bash
 version=v0.1.0
 arch=amd64
-base="https://github.com/realheyu/backup-tool/releases/download/$version"
+base="https://github.com/realheyu/mysql-backup-tool/releases/download/$version"
 mkdir -p "/root/backup-tool-$version-$arch"
 cd "/root/backup-tool-$version-$arch"
 curl -fLO "$base/backup-tool-linux-$arch.tar.gz"
@@ -94,6 +176,8 @@ fi
 install -d -m 700 -o root -g root /opt/backup-tool
 install -m 755 ./backup-tool /opt/backup-tool/backup-tool
 install -m 644 README.md LICENSE THIRD_PARTY_NOTICES.txt /opt/backup-tool/
+install -d -m 700 /opt/backup-tool/deploy
+install -m 644 deploy/cron.example deploy/cron.docker.example /opt/backup-tool/deploy/
 if [ ! -e /opt/backup-tool/backup-tool.toml ]; then
   install -m 600 ./backup-tool.toml /opt/backup-tool/backup-tool.toml
 fi
@@ -118,9 +202,74 @@ fi
 ```bash
 install -m 755 ./backup-tool /opt/backup-tool/backup-tool
 install -m 644 README.md LICENSE THIRD_PARTY_NOTICES.txt /opt/backup-tool/
+install -d -m 700 /opt/backup-tool/deploy
+install -m 644 deploy/cron.example deploy/cron.docker.example /opt/backup-tool/deploy/
 /opt/backup-tool/backup-tool --version
 /opt/backup-tool/backup-tool --config /opt/backup-tool/backup-tool.toml --check
 ```
+
+### 容器内运行程序，宿主机定时执行
+
+也可以将备份程序放在 MySQL 容器内执行，由宿主机 cron 调用。本例容器名为 `mysql-01`，容器内已有与源库兼容的 `mysqldump`；宿主机安装 Docker CLI 并能访问本机 Docker 服务。此方式只需在容器内提供 MySQL 客户端，前面的宿主机 `mysqldump` 安装步骤可以跳过；运行包仍需选择容器对应的 Linux 架构。
+
+先按“首次安装”在宿主机准备 `/opt/backup-tool` 下的程序和配置，再准备备份目录：
+
+```bash
+install -d -m 700 -o root -g root /srv/backup-tool-backups
+```
+
+将下面两项加入现有 MySQL 服务的 Compose `volumes`，保留原有的数据卷、环境变量等配置；`mysql` 替换为实际服务名。这是需要合入现有文件的片段：
+
+```yaml
+services:
+  mysql:
+    volumes:
+      - /opt/backup-tool:/opt/backup-tool:ro
+      - /srv/backup-tool-backups:/backups
+```
+
+程序和配置通过[目录挂载](https://docs.docker.com/engine/storage/bind-mounts/)在容器内可用，配置保持只读；备份、锁和周统计写入可写的 `/backups`，实际保存在宿主机 `/srv/backup-tool-backups`。新增挂载需要按原部署方式重建容器，会中断该容器的服务，安排在维护窗口执行并保留原 MySQL 数据卷。容器重建后继续使用这两个挂载。
+
+编辑宿主机 `/opt/backup-tool/backup-tool.toml` 中对应字段，其他配置继续沿用；下面的 `[mysql]` 字段合入已有区块，不要重复添加区块：
+
+```toml
+backup_dir = "/backups"  # 顶层字段，放在 [mysql] 之前
+
+[mysql]
+host = "127.0.0.1"       # 程序与 MySQL 在同一个容器内
+port = 3306              # MySQL 容器内端口
+user = "backup"
+password = '替换为备份账号密码'
+databases = ["your_business_db"]
+```
+
+此例直接在权限为 `600` 的 TOML 中提供密码；使用该方式时清除 `defaults_file`、`password_env`。`dump_binary`、`defaults_file` 等路径均按容器内路径填写。OSS 和钉钉也可在 TOML 中填写凭据；若使用环境变量，应在创建容器时配置，或用 `docker exec --env-file` 显式传入，宿主机终端或 cron 中的变量不会自动传入容器。启用 HTTPS 同步或通知时，容器内还需有 CA 根证书并能访问对应服务。
+
+容器启动后，在宿主机以 root 手工验收：
+
+```bash
+command -v docker
+docker exec --user 0 mysql-01 mysqldump --version
+docker exec --user 0 mysql-01 /opt/backup-tool/backup-tool --version
+docker exec --user 0 mysql-01 /opt/backup-tool/backup-tool --config /opt/backup-tool/backup-tool.toml --check
+docker exec --user 0 mysql-01 /opt/backup-tool/backup-tool --config /opt/backup-tool/backup-tool.toml
+ls -l /srv/backup-tool-backups
+```
+
+确认实际备份成功后，按下文“定时执行和恢复”检查并替换已有任务，在宿主机安装 [容器执行模板](deploy/cron.docker.example)：
+
+```bash
+install -m 644 /opt/backup-tool/deploy/cron.docker.example /etc/cron.d/backup-tool
+```
+
+模板内容如下；将 `/usr/bin/docker` 改为 `command -v docker` 的实际结果，`mysql-01` 改为实际容器名。安装后按下文检查文件权限和宿主机 cron 服务：
+
+```cron
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+0 3 * * * root /usr/bin/docker exec --user 0 mysql-01 /opt/backup-tool/backup-tool --config /opt/backup-tool/backup-tool.toml > /dev/null 2>&1
+```
+
+调度时间按宿主机 cron 的时区，备份目录时间仍固定使用 UTC+8。按 [Docker exec 说明](https://docs.docker.com/reference/cli/docker/container/exec/)，目标容器必须正在运行；cron 中直接等待命令结束，不加 `-it` 或 `-d`。容器停止或 Docker 调用失败时，程序未启动，无法发钉钉告警；此模板也不保留该错误输出，排查时在宿主机手动执行同一条 `docker exec` 命令。通知中的服务器名取自容器内的主机名。
 
 ## 备份来源和密码
 
@@ -130,7 +279,7 @@ install -m 644 README.md LICENSE THIRD_PARTY_NOTICES.txt /opt/backup-tool/
 | --- | --- |
 | 本机 MySQL | `host = "127.0.0.1"`、实际端口；也可只设置本机 `socket` |
 | 远程 MySQL | 远程数据库地址、端口；需从本机可达且账号允许连接 |
-| 本机或远程 Docker MySQL | 宿主机可达地址、映射后的端口，如 `13306` |
+| 本机或远程 Docker MySQL | 从宿主机运行时填宿主机可达地址、映射后的端口，如 `13306`；与 MySQL 在同一容器内运行时填 `127.0.0.1` 和容器内端口 |
 
 例如备份远程 MySQL：
 
@@ -143,7 +292,7 @@ password_env = "MYSQL_BACKUP_PASSWORD"
 databases = ["app"]
 ```
 
-配置 `host` 或 `port` 时使用 TCP；`socket` 只用于本机，不能与 `host`、`port` 同时设置。SQL 在本机压缩为 `.sql.gz` 并校验，源数据库服务器无需安装本工具，也不会在源服务器生成备份文件。
+配置 `host` 或 `port` 时使用 TCP；`socket` 只用于本机，不能与 `host`、`port` 同时设置。SQL 在运行本工具的环境中压缩为 `.sql.gz` 并校验；远程连接数据库时，源数据库服务器无需安装本工具，备份文件也保存在工具所在环境。
 
 旧配置迁移：删除 `[mysql]` 中的 `container`、`ssh_host`、`ssh_port`、`ssh_key`、`separate`，包括值为空的字段，并改填数据库连接参数和明确的数据库列表。`[sync]` 只支持 `type = "none"` 或 `"oss"`，删除其中所有 `ssh_host`、`ssh_dir`、`ssh_port`、`ssh_key` 字段。保留旧字段会报未知配置项错误。
 
@@ -216,14 +365,26 @@ oss_region = "cn-hangzhou"
 
 ## 定时执行和恢复
 
-在 Linux 服务器上以 root 手工确认可用后，执行 `crontab -e`，编辑 root 用户的定时任务，例如每天服务器当地时间 03:00 执行：
+手工确认备份可用后，检查服务器时区和已有任务，避免重复执行：
 
-```cron
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-0 3 * * * /opt/backup-tool/backup-tool --config /opt/backup-tool/backup-tool.toml > /dev/null 2>&1
+```bash
+date '+%F %T %Z %z'
+crontab -l 2>/dev/null | grep -n 'backup-tool'
+grep -R -n 'backup-tool' /etc/crontab /etc/cron.d 2>/dev/null
 ```
 
-cron 不继承交互终端环境，使用环境变量时需另外提供。示例将输出丢弃，避免生成日志文件或 cron 邮件；失败仍会尝试发钉钉通知，若通知也失败则不保留历史记录。排查问题时在终端手动执行命令，不加输出重定向。
+后两条没有输出表示相应位置未找到任务。检查并替换已有的备份任务后，宿主机直接运行程序时安装 [定时任务模板](deploy/cron.example)；容器内运行时改用上文的 `cron.docker.example`，两种模板选择一种：
+
+```bash
+install -m 644 /opt/backup-tool/deploy/cron.example /etc/cron.d/backup-tool
+stat -c '%U:%G %a %n' /etc/cron.d/backup-tool
+cat /etc/cron.d/backup-tool
+systemctl is-active cron
+```
+
+预期归属和权限为 `root:root 644`，服务状态为 `active`；使用 `crond` 服务名的系统改查该服务。运行中的 cron 会自动读取文件。模板默认每天服务器 cron 使用的时区 03:00 以 root 执行；调整时间或安装路径时修改该文件。`/etc/cron.d/` 格式包含 `root` 用户字段，改放到 `crontab -e` 时须去掉该字段。更新模板后需重新安装，避免覆盖本机调整。
+
+cron 不继承交互终端环境，使用环境变量时需另外提供。模板丢弃输出以避免日志和 cron 邮件；失败仍会尝试发钉钉通知，若通知也失败则不保留历史记录。排查问题时在终端手动执行命令，不加输出重定向。
 
 恢复先核对 SHA256，再导入隔离的测试实例：
 
@@ -257,12 +418,15 @@ Makefile 固定使用 `CGO_ENABLED=0` 静态编译，使用 `-trimpath` 并去�
 
 ## 自动构建和发布
 
-[GitHub Actions](.github/workflows/ci.yml) 在推送 `main`、提交 PR 或手工运行时，执行 Linux/macOS 的 `make check`，构建 Linux amd64/arm64 产物并保存到 Actions 的 `backup-tool-linux` artifact。所有构建使用 `go.mod` 中的 Go 版本。
+[GitHub Actions](.github/workflows/ci.yml) 在推送 `main`、提交 PR 或手工运行时，执行 Linux/macOS 的 `make check`，构建 Linux amd64/arm64 产物并保存到 Actions 的 `backup-tool-linux` artifact。同时在 amd64、arm64 原生 runner 上分别构建 Docker 镜像，导出为 gzip 压缩的 Docker 归档，保存到 `backup-tool-image-linux-amd64` 和 `backup-tool-image-linux-arm64` artifact。所有 Actions 构建使用 `go.mod` 中的 Go 版本。
 
-推送 `v*` tag 后，两种系统的测试和构建全部通过才发布 GitHub Release，附带：
+镜像任务检查架构、压缩包完整性和 `docker load` 导入，启动常驻容器后验证程序版本、MySQL 客户端和配置读取。该检查不连接真实数据库；部署后仍需实际备份和隔离恢复验收。不推送 GHCR 或 Docker Hub，无需镜像仓库账号。
+
+推送 `v*` tag 后，两种系统的测试、二进制构建和两种架构的镜像验证全部通过才发布 GitHub Release，附带：
 
 - `backup-tool-linux-amd64`、`backup-tool-linux-arm64`：可直接安装的静态二进制。
-- `backup-tool-linux-amd64.tar.gz`、`backup-tool-linux-arm64.tar.gz`：程序、配置模板、说明和许可。
+- `backup-tool-linux-amd64.tar.gz`、`backup-tool-linux-arm64.tar.gz`：程序、配置和定时任务模板、说明和许可。
+- `backup-tool-image-linux-amd64.tar.gz`、`backup-tool-image-linux-arm64.tar.gz`：包含 MySQL 8.0 客户端的 Docker 镜像，使用 `docker load` 导入。
 - `THIRD_PARTY_NOTICES.txt`、`SHA256SUMS`：依赖许可和上述文件的 SHA256 校验。
 
 发布时将版本号替换成待发布版本；tag 对应的版本会写入程序的 `--version` 输出：

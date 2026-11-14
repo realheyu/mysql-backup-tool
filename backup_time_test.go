@@ -12,14 +12,18 @@ import (
 )
 
 func TestBackupDirectoryUsesUTCPlus8(t *testing.T) {
-	instant := time.Date(2026, 11, 5, 20, 4, 5, 0, time.UTC)
+	// Keep the fixture within retention while still crossing midnight in UTC+8.
+	yesterday := time.Now().UTC().AddDate(0, 0, -1)
+	instant := time.Date(yesterday.Year(), yesterday.Month(), yesterday.Day(), 20, 4, 5, 0, time.UTC)
+	expectedDate := instant.AddDate(0, 0, 1).Format("2006-01-02")
+	expectedID := expectedDate + "_04-04-05"
 	for _, zone := range []*time.Location{time.UTC, time.FixedZone("UTC-7", -7*60*60)} {
 		t.Run(zone.String(), func(t *testing.T) {
 			c := fixture(t)
 			if err := runBackupAt(context.Background(), c, nil, instant.In(zone)); err != nil {
 				t.Fatal(err)
 			}
-			path := filepath.Join(c.root(), "2026-11-06_04-04-05", "backup.json")
+			path := filepath.Join(c.root(), expectedID, "backup.json")
 			data, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal("backup directory does not use Beijing time", err)
@@ -28,7 +32,7 @@ func TestBackupDirectoryUsesUTCPlus8(t *testing.T) {
 			if err := json.Unmarshal(data, &info); err != nil {
 				t.Fatal(err)
 			}
-			if info.ID != "2026-11-06_04-04-05" || info.CreatedAt.Format(time.RFC3339) != "2026-11-06T04:04:05+08:00" {
+			if info.ID != expectedID || info.CreatedAt.Format(time.RFC3339) != expectedDate+"T04:04:05+08:00" {
 				t.Fatal("incorrect backup timestamp", info.ID, info.CreatedAt)
 			}
 		})

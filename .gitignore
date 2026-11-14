@@ -2,6 +2,7 @@
 /bin/
 /dist/
 /backups/
+/build-tool/
 /backup-tool.toml
 *.cnf
 *.partial

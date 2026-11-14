@@ -27,8 +27,10 @@ release: build-linux-amd64 build-linux-arm64
 	for arch in amd64 arm64; do \
 		install -m 755 "dist/backup-tool-linux-$$arch" "$$stage/backup-tool"; \
 		install -m 644 backup-tool.example.toml README.md LICENSE THIRD_PARTY_NOTICES.txt "$$stage/"; \
+		mkdir -p "$$stage/deploy"; \
+		install -m 644 deploy/cron.example deploy/cron.docker.example "$$stage/deploy/"; \
 		tar -czf "dist/backup-tool-linux-$$arch.tar.gz" -C "$$stage" \
-			backup-tool backup-tool.example.toml README.md LICENSE THIRD_PARTY_NOTICES.txt; \
+			backup-tool backup-tool.example.toml README.md LICENSE THIRD_PARTY_NOTICES.txt deploy/cron.example deploy/cron.docker.example; \
 	done
 	install -m 644 THIRD_PARTY_NOTICES.txt dist/THIRD_PARTY_NOTICES.txt
 	cd dist && shasum -a 256 backup-tool-linux-amd64 backup-tool-linux-arm64 \
@@ -47,6 +49,8 @@ install: build
 	install -d -m 700 "$(DESTDIR)$(PREFIX)"
 	install -m 755 backup-tool "$(DESTDIR)$(PREFIX)/backup-tool"
 	install -m 644 README.md LICENSE THIRD_PARTY_NOTICES.txt "$(DESTDIR)$(PREFIX)/"
+	install -d -m 700 "$(DESTDIR)$(PREFIX)/deploy"
+	install -m 644 deploy/cron.example deploy/cron.docker.example "$(DESTDIR)$(PREFIX)/deploy/"
 	@if [ ! -e "$(DESTDIR)$(PREFIX)/backup-tool.toml" ] && [ ! -L "$(DESTDIR)$(PREFIX)/backup-tool.toml" ]; then \
 		install -m 600 backup-tool.example.toml "$(DESTDIR)$(PREFIX)/backup-tool.toml"; \
 	fi

@@ -1,0 +1,9 @@
+# Only send build inputs; local credentials, backups and binaries stay outside.
+**
+!Dockerfile
+!.dockerignore
+!go.mod
+!go.sum
+!/*.go
+!LICENSE
+!THIRD_PARTY_NOTICES.txt

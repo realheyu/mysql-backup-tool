@@ -54,10 +54,67 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  image:
+    name: Build Docker archive (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      IMAGE_ARCH: ${{ matrix.arch }}
+      IMAGE_TAG: backup-tool:mysql8.0
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Build and export image
+        run: |
+          version=$(git describe --tags --always --dirty)
+          go_version=$(awk '$1 == "go" { print $2 }' go.mod)
+          docker build --pull --platform "linux/$IMAGE_ARCH" \
+            --build-arg "GO_IMAGE=golang:$go_version" \
+            --build-arg "VERSION=$version" \
+            -t "$IMAGE_TAG" .
+          test "$(docker image inspect "$IMAGE_TAG" --format '{{.Architecture}}')" = "$IMAGE_ARCH"
+          mkdir -p image-dist
+          docker save "$IMAGE_TAG" | gzip > "image-dist/backup-tool-image-linux-$IMAGE_ARCH.tar.gz"
+      - name: Verify archive and resident container
+        run: |
+          archive="image-dist/backup-tool-image-linux-$IMAGE_ARCH.tar.gz"
+          gzip -t "$archive"
+          docker load -i "$archive"
+          mkdir -p image-check-data
+          cp backup-tool.example.toml image-check-data/backup-tool.toml
+          trap 'docker rm -f image-check >/dev/null 2>&1 || true' EXIT
+          docker run -d --name image-check \
+            -v "$PWD/image-check-data:/build-tool" "$IMAGE_TAG"
+          version=$(git describe --tags --always --dirty)
+          test "$(docker exec image-check backup-tool --version)" = "backup-tool $version"
+          docker exec image-check mysqldump --version
+          docker exec image-check mysql --version
+          docker exec image-check backup-tool --config ./backup-tool.toml --check
+          test "$(docker inspect image-check --format '{{.State.Running}}')" = true
+          cd image-dist
+          sha256sum "backup-tool-image-linux-$IMAGE_ARCH.tar.gz" > "SHA256SUMS-image-linux-$IMAGE_ARCH"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: backup-tool-image-linux-${{ matrix.arch }}
+          path: image-dist/*
+          compression-level: 0
+          if-no-files-found: error
+
   release:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, build]
+    needs: [test, build, image]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -66,7 +123,17 @@ jobs:
         with:
           name: backup-tool-linux
           path: dist
-      - name: Publish binaries, packages and checksums
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: backup-tool-image-linux-*
+          merge-multiple: true
+          path: dist
+      - name: Merge image checksums
+        run: |
+          cd dist
+          cat SHA256SUMS-image-linux-amd64 SHA256SUMS-image-linux-arm64 >> SHA256SUMS
+          rm SHA256SUMS-image-linux-amd64 SHA256SUMS-image-linux-arm64
+      - name: Publish binaries, packages, images and checksums
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

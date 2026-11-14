@@ -1,4 +1,4 @@
-module github.com/realheyu/backup-tool
+module github.com/realheyu/mysql-backup-tool
 
 go 1.27.3
 
