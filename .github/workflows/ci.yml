@@ -100,7 +100,7 @@ jobs:
           test "$(docker exec image-check backup-tool --version)" = "backup-tool $version"
           docker exec image-check mysqldump --version
           docker exec image-check mysql --version
-          docker exec image-check backup-tool --config ./backup-tool.toml --check
+          docker exec image-check backup-tool --config /build-tool/backup-tool.toml --check
           test "$(docker inspect image-check --format '{{.State.Running}}')" = true
           cd image-dist
           sha256sum "backup-tool-image-linux-$IMAGE_ARCH.tar.gz" > "SHA256SUMS-image-linux-$IMAGE_ARCH"

@@ -8,12 +8,14 @@ MySQL 备份小工具，统一使用运行环境中的 `mysqldump`，通过数�
 
 镜像构建使用 Ubuntu 默认 APT 源和 Go 默认模块代理，保留模块校验，不配置国内镜像源。基础镜像从 Docker Hub 拉取；构建参数 `GO_IMAGE`、`UBUNTU_IMAGE` 可指定对应的 Go 1.27.3 和 Ubuntu 24.04 镜像。
 
-推荐从 [Releases](https://github.com/realheyu/mysql-backup-tool/releases) 下载由 Actions 构建的镜像归档，不需要登录镜像仓库或在服务器上编译。Linux x86_64 选择 `backup-tool-image-linux-amd64.tar.gz`，aarch64 选择 `backup-tool-image-linux-arm64.tar.gz`，同时下载同一版本的 `SHA256SUMS`。在下载目录执行（ARM64 修改 `arch`）：
+推荐从 [Releases](https://github.com/realheyu/mysql-backup-tool/releases) 下载由 Actions 构建的镜像归档，不需要登录镜像仓库或在服务器上编译。Linux x86_64 选择 `backup-tool-image-linux-amd64.tar.gz`，aarch64 选择 `backup-tool-image-linux-arm64.tar.gz`，同时下载同一版本的 `SHA256SUMS`。将文件放到 `/opt/mysql-backup-tool/downloads` 后执行（ARM64 修改 `arch`）：
 
 ```bash
 arch=amd64
-awk -v file="backup-tool-image-linux-$arch.tar.gz" '$2 == file' SHA256SUMS > image.sha256
-test -s image.sha256 && sha256sum -c image.sha256 && docker load -i "./backup-tool-image-linux-$arch.tar.gz"
+download_dir=/opt/mysql-backup-tool/downloads
+cd "$download_dir"
+awk -v file="backup-tool-image-linux-$arch.tar.gz" '$2 == file' "$download_dir/SHA256SUMS" > "$download_dir/image.sha256"
+test -s "$download_dir/image.sha256" && sha256sum -c "$download_dir/image.sha256" && docker load -i "$download_dir/backup-tool-image-linux-$arch.tar.gz"
 ```
 
 归档由 `docker save` 导出并使用 gzip 压缩，`docker load` 可直接读取，无需手工解压。导入后的镜像名为 `backup-tool:mysql8.0`，程序内含对应发布版本。更新时导入新版归档，再按下文重建常驻容器；旧容器不会因为导入新镜像自动更新。
@@ -29,26 +31,26 @@ docker image inspect backup-tool:mysql8.0 --format '{{.Size}}'
 
 `VERSION` 可改为实际发布版本。MySQL 客户端补丁版本由构建时的 Ubuntu 软件源决定，重建时可加 `--pull --no-cache` 获取更新，更新后验证实际备份和恢复。镜像大小以 `inspect` 输出为准（字节）。[.dockerignore](.dockerignore) 只允许源码、模块文件和许可进入构建上下文，配置、凭据和备份不打入镜像。
 
-运行时只挂载当前目录下的 `./build-tool`，配置、可选客户端配置和备份都放在这个目录中。程序和 MySQL 客户端已在镜像内，不需要放入挂载目录：
+运行时只挂载宿主机目录 `/opt/mysql-backup-tool/build-tool`，配置、可选客户端配置和备份都放在这个目录中。程序和 MySQL 客户端已在镜像内，不需要放入挂载目录：
 
 ```text
-build-tool/
+/opt/mysql-backup-tool/build-tool/
 ├── backup-tool.toml     # 运行配置
 ├── mysql-client.cnf     # 可选：使用 defaults_file 时提供
 ├── backup.env           # 可选：使用 --env-file 时提供
 └── backups/             # 备份、锁和周统计，按任务名分目录
 ```
 
-在部署目录准备运行目录，已有配置会保留。配置模板可从同一 Release 的 `backup-tool-linux-amd64.tar.gz` 或 `backup-tool-linux-arm64.tar.gz` 运行包取出；源码部署直接使用源码根目录的模板。创建容器时从 `build-tool` 的父目录执行启动命令：
+准备运行目录，已有配置会保留。将同一 Release 的 `backup-tool-linux-amd64.tar.gz` 或 `backup-tool-linux-arm64.tar.gz` 运行包解压到 `/opt/mysql-backup-tool/downloads`，取得配置模板，然后执行：
 
 ```bash
-install -d -m 700 ./build-tool ./build-tool/backups
-if [ ! -e ./build-tool/backup-tool.toml ]; then
-  install -m 600 ./backup-tool.example.toml ./build-tool/backup-tool.toml
+install -d -m 700 /opt/mysql-backup-tool/build-tool /opt/mysql-backup-tool/build-tool/backups
+if [ ! -e /opt/mysql-backup-tool/build-tool/backup-tool.toml ]; then
+  install -m 600 /opt/mysql-backup-tool/downloads/backup-tool.example.toml /opt/mysql-backup-tool/build-tool/backup-tool.toml
 fi
 ```
 
-编辑 `./build-tool/backup-tool.toml`，保留顶层 `backup_dir = "./backups"`，在 `[mysql]` 中填入可从容器访问的数据库地址、端口、账号和业务库。可以在 TOML 中填写 `password`；使用环境变量时，在 Docker 命令中添加 `--env-file ./build-tool/backup.env`。使用客户端配置时设置 `defaults_file = "./mysql-client.cnf"`，不需要额外挂载。配置中的相对路径以 TOML 所在目录为准。
+编辑 `/opt/mysql-backup-tool/build-tool/backup-tool.toml`，设置顶层 `backup_dir = "/build-tool/backups"`，在 `[mysql]` 中填入可从容器访问的数据库地址、端口、账号和业务库。可以在 TOML 中填写 `password`；使用环境变量时，在 Docker 命令中添加 `--env-file /opt/mysql-backup-tool/build-tool/backup.env`。使用客户端配置时设置 `defaults_file = "/build-tool/mysql-client.cnf"`，不需要额外挂载。配置中的文件路径填写容器内绝对路径。
 
 容器中的 `127.0.0.1` 指向备份容器自身；若连接同一 Docker 网络中的 MySQL，添加 `--network 实际网络名`，并将 `host` 设置为数据库服务名、`port` 设置为容器内端口。
 
@@ -56,7 +58,7 @@ fi
 docker run -d \
   --name mysql-backup \
   --restart unless-stopped \
-  -v ./build-tool:/build-tool \
+  -v /opt/mysql-backup-tool/build-tool:/build-tool \
   backup-tool:mysql8.0
 ```
 
@@ -65,22 +67,22 @@ docker run -d \
 ```bash
 docker exec mysql-backup backup-tool --version
 docker exec mysql-backup mysqldump --version
-docker exec mysql-backup backup-tool --config ./backup-tool.toml --check
-docker exec mysql-backup backup-tool --config ./backup-tool.toml
+docker exec mysql-backup backup-tool --config /build-tool/backup-tool.toml --check
+docker exec mysql-backup backup-tool --config /build-tool/backup-tool.toml
 ```
 
-`--check` 仅检查配置，不连接数据库。宿主机来源使用相对路径 `./build-tool`，容器挂载目标 `/build-tool` 按 Docker 要求使用绝对路径；它也是 `docker exec` 的默认工作目录，程序读取 `./backup-tool.toml`。备份、锁和周统计均写入宿主机的 `./build-tool/backups`。备份进程完成后退出，容器继续运行。整个运行目录已加入 `.gitignore` 和 Docker 构建排除规则。
+`--check` 仅检查配置，不连接数据库。程序读取容器内的 `/build-tool/backup-tool.toml`，将备份、锁和周统计写到 `/build-tool/backups`，通过挂载对应到宿主机 `/opt/mysql-backup-tool/build-tool/backups`。例如任务名 `mysql-a` 的备份保存在宿主机 `/opt/mysql-backup-tool/build-tool/backups/mysql-a/备份时间/`。备份进程完成后退出，容器继续运行。整个运行目录已加入 `.gitignore` 和 Docker 构建排除规则。
 
 镜像默认以 root 运行；如自行指定 `--user`，需保证该用户能读取配置、写入备份目录。实际备份和隔离恢复验证通过后，可在宿主机 `crontab -e` 中配置每天 03:00 执行（按宿主机时区，替换已有任务以避免重复）：
 
 ```cron
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-0 3 * * * docker exec mysql-backup backup-tool --config ./backup-tool.toml
+0 3 * * * docker exec mysql-backup backup-tool --config /build-tool/backup-tool.toml
 ```
 
-相对路径在容器工作目录下解析，cron 不需要先切换宿主机目录。定时执行不加 `-d` 或 `-it`，等待备份完成并返回退出码；输出交给 cron 处理。容器未运行或 Docker 调用失败时，程序尚未启动，不能发出钉钉告警。
+配置和挂载均使用绝对路径，cron 不需要先切换目录。定时执行不加 `-d` 或 `-it`，等待备份完成并返回退出码；输出交给 cron 处理。容器未运行或 Docker 调用失败时，程序尚未启动，不能发出钉钉告警。
 
-修改挂载目录中的 TOML 或客户端配置，下一次备份直接读取新配置；修改通过 `--env-file` 注入的环境变量、挂载参数或更新镜像时需要重建容器。先确认当前备份已结束，再执行 `docker stop mysql-backup`、`docker rm mysql-backup`，然后从运行目录的父目录重新执行上述启动命令；宿主机 `./build-tool` 内的文件保留。
+修改挂载目录中的 TOML 或客户端配置，下一次备份直接读取新配置；修改通过 `--env-file` 注入的环境变量、挂载参数或更新镜像时需要重建容器。先确认当前备份已结束，再执行 `docker stop mysql-backup`、`docker rm mysql-backup`，然后重新执行上述启动命令；宿主机 `/opt/mysql-backup-tool/build-tool` 内的文件保留。
 
 ## Linux 安装和运行
 
@@ -183,7 +185,7 @@ if [ ! -e /opt/backup-tool/backup-tool.toml ]; then
 fi
 ```
 
-修改 `/opt/backup-tool/backup-tool.toml`，填入任务名、业务数据库、OSS 和钉钉等配置。只需编辑这一份配置；例如 `backup_dir = "./backups"` 对应 `/opt/backup-tool/backups`。
+修改 `/opt/backup-tool/backup-tool.toml`，填入任务名、业务数据库、OSS 和钉钉等配置。只需编辑这一份配置；宿主机直接运行时，将模板中的 `backup_dir` 改为 `/opt/backup-tool/backups`。
 
 ### 检查与运行
 
@@ -193,7 +195,7 @@ fi
 /opt/backup-tool/backup-tool --config /opt/backup-tool/backup-tool.toml
 ```
 
-`--check` 只检查配置，不检查 `mysqldump` 是否安装、不连接数据库或更新统计；检查成功不发消息，配置错误仍尝试告警。`backup_dir` 和 `mysql.defaults_file` 的相对路径以 TOML 所在目录为准。
+`--check` 只检查配置，不检查 `mysqldump` 是否安装、不连接数据库或更新统计；检查成功不发消息，配置错误仍尝试告警。`--config`、`backup_dir`、`mysql.defaults_file` 和 `mysql.socket`（填写时）必须是程序运行环境内的绝对路径；旧配置中的相对路径需要改为实际绝对路径。默认配置路径为 `/build-tool/backup-tool.toml`，默认备份目录为 `/build-tool/backups`。`dump_binary` 仍可填写 PATH 中的命令名或可执行文件绝对路径。
 
 ### 更新程序
 

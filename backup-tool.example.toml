@@ -1,5 +1,5 @@
 name = "mysql"
-backup_dir = "./backups"
+backup_dir = "/build-tool/backups" # 容器内绝对路径；宿主机直接运行时改为实际绝对路径
 keep_days = 7          # 本机保留天数，必须大于 0；同步失败、损坏或中断残留的备份也到期清理
 timeout = "30m"
 
@@ -17,7 +17,7 @@ databases = ["your_business_db"] # 必填：明确列出业务库；每库一个
 
 # 已有本机客户端配置可直接使用，不用再填密码。
 # 或选择以下一种认证方式；也可运行时加 --ask-password：
-# defaults_file = "./mysql-client.cnf"  # 本机路径，相对于此 TOML 文件
+# defaults_file = "/build-tool/mysql-client.cnf"  # 程序运行环境内的绝对路径
 # password = 'your-password'
 # password_env = "MYSQL_BACKUP_PASSWORD"  # 从运行本工具的本机读取
 

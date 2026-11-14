@@ -75,16 +75,38 @@ func TestRemovedSourceSettingsRejected(t *testing.T) {
 
 func TestClientConfigPathsAreLocal(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(p, []byte("[mysql]\nhost='10.0.0.10'\ndatabases=['demo']\ndefaults_file='credentials/client.cnf'"), 0600); err != nil {
+	want := filepath.Join(t.TempDir(), "credentials", "client.cnf")
+	if err := os.WriteFile(p, []byte(fmt.Sprintf("[mysql]\nhost='10.0.0.10'\ndatabases=['demo']\ndefaults_file=%q", want)), 0600); err != nil {
 		t.Fatal(err)
 	}
 	c, err := loadConfig(p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(filepath.Dir(p), "credentials/client.cnf")
 	if c.MySQL.DefaultsFile != want {
-		t.Fatal("client config not resolved against local TOML directory", c.MySQL.DefaultsFile)
+		t.Fatal("absolute client config path changed", c.MySQL.DefaultsFile)
+	}
+}
+
+func TestRelativeRuntimePathsAreRejected(t *testing.T) {
+	if _, err := loadConfig("config.toml"); err == nil || !strings.Contains(err.Error(), "--config") {
+		t.Fatal("relative configuration path accepted", err)
+	}
+	for _, tc := range []struct{ field, config string }{
+		{"backup_dir", "backup_dir='./backups'\n[mysql]\ndatabases=['demo']"},
+		{"mysql.defaults_file", "[mysql]\ndatabases=['demo']\ndefaults_file='credentials/client.cnf'"},
+		{"mysql.socket", "[mysql]\ndatabases=['demo']\nsocket='mysql.sock'"},
+		{"mysql.dump_binary", "[mysql]\ndatabases=['demo']\ndump_binary='./mysqldump'"},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(p, []byte(tc.config), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := loadConfig(p); err == nil || !strings.Contains(err.Error(), tc.field) {
+				t.Fatal("relative runtime path accepted", err)
+			}
+		})
 	}
 }
 

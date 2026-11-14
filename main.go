@@ -18,7 +18,7 @@ var version = "dev"
 func main() { os.Exit(cli()) }
 func cli() int {
 	flags := flag.NewFlagSet("backup-tool", flag.ContinueOnError)
-	path := flags.String("config", "backup-tool.toml", "TOML 配置文件")
+	path := flags.String("config", "/build-tool/backup-tool.toml", "TOML 配置文件的绝对路径")
 	ask := flags.Bool("ask-password", false, "运行时输入 MySQL 密码（不回显）")
 	check := flags.Bool("check", false, "仅检查配置；配置错误仍尝试通知")
 	ver := flags.Bool("version", false, "显示版本")
@@ -31,7 +31,7 @@ func cli() int {
 		return 0
 	}
 	if parseErr == nil && flags.NArg() != 0 {
-		parseErr = fmt.Errorf("不支持子命令；用法: backup-tool --config backup-tool.toml")
+		parseErr = fmt.Errorf("不支持子命令；用法: backup-tool --config /build-tool/backup-tool.toml")
 	}
 	c, configErr := loadConfig(*path)
 	resolveDingTalk(&c)

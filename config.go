@@ -54,7 +54,10 @@ var safeOSSBucket = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$`)
 var safeOSSRegion = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 func loadConfig(path string) (Config, error) {
-	c := Config{Name: "mysql", BackupDir: "./backups", KeepDays: 7, Timeout: "30m", MySQL: MySQL{SingleTransaction: true, DumpBinary: "mysqldump"}, Sync: Sync{Type: "none"}}
+	c := Config{Name: "mysql", BackupDir: "/build-tool/backups", KeepDays: 7, Timeout: "30m", MySQL: MySQL{SingleTransaction: true, DumpBinary: "mysqldump"}, Sync: Sync{Type: "none"}}
+	if !filepath.IsAbs(path) {
+		return c, fmt.Errorf("--config 必须使用绝对路径，例如 /build-tool/backup-tool.toml")
+	}
 	md, err := toml.DecodeFile(path, &c)
 	if err != nil {
 		return c, err
@@ -62,23 +65,16 @@ func loadConfig(path string) (Config, error) {
 	if x := md.Undecoded(); len(x) > 0 {
 		return c, fmt.Errorf("未知 TOML 配置项: %v", x)
 	}
-	base, err := filepath.Abs(filepath.Dir(path))
-	if err != nil {
-		return c, err
-	}
-	resolve := func(p string) string {
-		if p == "" || filepath.IsAbs(p) {
-			return p
-		}
-		return filepath.Join(base, p)
-	}
 	if !safeName.MatchString(c.Name) {
 		return c, fmt.Errorf("name 只能包含字母、数字、下划线和短横线，最长64字符")
 	}
 	if c.BackupDir == "" {
 		return c, fmt.Errorf("backup_dir 不能为空")
 	}
-	c.BackupDir = resolve(c.BackupDir)
+	if !filepath.IsAbs(c.BackupDir) {
+		return c, fmt.Errorf("backup_dir 必须使用绝对路径，例如 /build-tool/backups")
+	}
+	c.BackupDir = filepath.Clean(c.BackupDir)
 	if filepath.Clean(c.BackupDir) == "/" {
 		return c, fmt.Errorf("backup_dir 不能是根目录")
 	}
@@ -98,7 +94,12 @@ func loadConfig(path string) (Config, error) {
 	if m.Socket != "" && (m.Host != "" || m.Port > 0) {
 		return c, fmt.Errorf("socket 不能与 host/port 同时设置")
 	}
-	m.DefaultsFile = resolve(m.DefaultsFile)
+	if m.DefaultsFile != "" && !filepath.IsAbs(m.DefaultsFile) {
+		return c, fmt.Errorf("mysql.defaults_file 必须使用绝对路径")
+	}
+	if m.Socket != "" && !filepath.IsAbs(m.Socket) {
+		return c, fmt.Errorf("mysql.socket 必须使用绝对路径")
+	}
 	if m.Password != nil && m.PasswordEnv != "" {
 		return c, fmt.Errorf("password 和 password_env 只能选一个")
 	}
@@ -107,6 +108,9 @@ func loadConfig(path string) (Config, error) {
 	}
 	if m.DumpBinary == "" {
 		return c, fmt.Errorf("dump_binary 不能为空")
+	}
+	if strings.ContainsRune(m.DumpBinary, '/') && !filepath.IsAbs(m.DumpBinary) {
+		return c, fmt.Errorf("mysql.dump_binary 请填写 PATH 中的命令名或绝对路径")
 	}
 	if len(m.Databases) == 0 {
 		return c, fmt.Errorf("mysql.databases 必须明确填写要备份的数据库，不能留空")
