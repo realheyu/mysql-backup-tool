@@ -21,12 +21,11 @@ RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
        mysql-client-core-8.0 ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /build-tool \
     && mysqldump --version \
     && mysql --version
 
 COPY --from=build /out/backup-tool /usr/local/bin/backup-tool
 COPY LICENSE THIRD_PARTY_NOTICES.txt /usr/local/share/doc/backup-tool/
-WORKDIR /build-tool
+WORKDIR /mysql-backup-tool
 # Keep the container available for backups triggered with docker exec.
 CMD ["sleep", "infinity"]

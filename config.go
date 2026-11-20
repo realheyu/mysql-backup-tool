@@ -54,9 +54,9 @@ var safeOSSBucket = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$`)
 var safeOSSRegion = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 func loadConfig(path string) (Config, error) {
-	c := Config{Name: "mysql", BackupDir: "/build-tool/backups", KeepDays: 7, Timeout: "30m", MySQL: MySQL{SingleTransaction: true, DumpBinary: "mysqldump"}, Sync: Sync{Type: "none"}}
+	c := Config{Name: "mysql", BackupDir: "/mysql-backup-tool/backups", KeepDays: 7, Timeout: "30m", MySQL: MySQL{SingleTransaction: true, DumpBinary: "mysqldump"}, Sync: Sync{Type: "none"}}
 	if !filepath.IsAbs(path) {
-		return c, fmt.Errorf("--config 必须使用绝对路径，例如 /build-tool/backup-tool.toml")
+		return c, fmt.Errorf("--config 必须使用绝对路径，例如 /mysql-backup-tool/backup-tool.toml")
 	}
 	md, err := toml.DecodeFile(path, &c)
 	if err != nil {
@@ -72,7 +72,7 @@ func loadConfig(path string) (Config, error) {
 		return c, fmt.Errorf("backup_dir 不能为空")
 	}
 	if !filepath.IsAbs(c.BackupDir) {
-		return c, fmt.Errorf("backup_dir 必须使用绝对路径，例如 /build-tool/backups")
+		return c, fmt.Errorf("backup_dir 必须使用绝对路径，例如 /mysql-backup-tool/backups")
 	}
 	c.BackupDir = filepath.Clean(c.BackupDir)
 	if filepath.Clean(c.BackupDir) == "/" {

@@ -1,4 +1,4 @@
 # 宿主机 /etc/cron.d/ 模板，每天按宿主机 cron 时区的 03:00 执行。
 # 按实际环境修改 docker 路径、容器名和容器内路径；容器须已运行。
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-0 3 * * * root /usr/bin/docker exec --user 0 mysql-01 /opt/backup-tool/backup-tool --config /opt/backup-tool/backup-tool.toml > /dev/null 2>&1
+0 3 * * * root /usr/bin/docker exec --user 0 mysql-01 /mysql-backup-tool/backup-tool --config /mysql-backup-tool/backup-tool.toml > /dev/null 2>&1

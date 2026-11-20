@@ -101,11 +101,11 @@ jobs:
           cp backup-tool.example.toml image-check-data/backup-tool.toml
           trap 'docker rm -f image-check >/dev/null 2>&1 || true' EXIT
           docker run -d --name image-check \
-            -v "$PWD/image-check-data:/build-tool" "$IMAGE_TAG"
+            -v "$PWD/image-check-data:/mysql-backup-tool" "$IMAGE_TAG"
           test "$(docker exec image-check backup-tool --version)" = "backup-tool $IMAGE_VERSION"
           docker exec image-check mysqldump --version
           docker exec image-check mysql --version
-          docker exec image-check backup-tool --config /build-tool/backup-tool.toml --check
+          docker exec image-check backup-tool --check
           test "$(docker inspect image-check --format '{{.State.Running}}')" = true
           cd image-dist
           sha256sum "backup-tool-image-linux-$IMAGE_ARCH.tar.gz" > "SHA256SUMS-image-linux-$IMAGE_ARCH"

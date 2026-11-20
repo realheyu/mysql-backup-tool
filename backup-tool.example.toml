@@ -1,11 +1,11 @@
 name = "mysql"
-backup_dir = "/build-tool/backups" # 容器内绝对路径；宿主机直接运行时改为实际绝对路径
-keep_days = 7          # 本机保留天数，必须大于 0；同步失败、损坏或中断残留的备份也到期清理
+backup_dir = "/mysql-backup-tool/backups" # 容器内绝对路径；宿主机直接运行时填 /opt/mysql-backup-tool/backups
+keep_days = 7          # 本机保留天数，范围 1～36500；同步失败、损坏或中断残留的备份也到期清理
 timeout = "30m"
 
 [mysql]
-host = "127.0.0.1"   # 本机或远程数据库地址；Docker 填宿主机可达地址
-port = 3306          # 数据库端口；Docker 填映射后的端口
+host = "127.0.0.1"   # 从备份程序连接的地址。同一 Docker 网络可填 MySQL 服务名
+port = 3306          # 同一 Docker 网络填 MySQL 容器端口，从宿主机连接填发布的端口
 user = "backup"
 databases = ["your_business_db"] # 必填：明确列出业务库；每库一个文件，不允许空列表
 
@@ -17,7 +17,7 @@ databases = ["your_business_db"] # 必填：明确列出业务库；每库一个
 
 # 已有本机客户端配置可直接使用，不用再填密码。
 # 或选择以下一种认证方式；也可运行时加 --ask-password：
-# defaults_file = "/build-tool/mysql-client.cnf"  # 程序运行环境内的绝对路径
+# defaults_file = "/mysql-backup-tool/mysql-client.cnf"  # 程序运行环境内的绝对路径
 # password = 'your-password'
 # password_env = "MYSQL_BACKUP_PASSWORD"  # 从运行本工具的本机读取
 
